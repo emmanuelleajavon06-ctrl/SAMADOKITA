@@ -1,0 +1,34 @@
+# Keep-Alive Render (plan gratuit)
+#
+# Les services Render en plan gratuit s'extinguissent après ~15 min sans activité ;
+# le premier appel suivant met alors ~50 s à réveiller le service. Ce workflow pinge
+# le backend et le frontend toutes les 10 minutes pour maintenir les instances
+# éveillées (deux requêtes HTTP sans coût, aucun effet sur la facturation gratuite).
+#
+# Limite connue : GitHub désactive les workflows planifiés après 60 jours d'inactivité
+# sur le dépôt — un push ou un clic sur "Run workflow" (workflow_dispatch) les réactive.
+name: Keep-Alive (reveil des services Render)
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Reveil backend (/health/live)
+        run: |
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 90 \
+            https://samadokita-backend.onrender.com/health/live || echo "000")
+          echo "backend /health/live -> HTTP $code"
+          # Un code non-200 peut survenir pendant un redemarrage de deploy : on
+          # journalise sans echouer le job pour ne pas polluer les statuts CI.
+
+      - name: Reveil frontend (/)
+        run: |
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 90 \
+            https://samadokita-frontend.onrender.com/ || echo "000")
+          echo "frontend / -> HTTP $code"

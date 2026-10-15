@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PageTransition } from "@/components/ui/page-transition";
 import { useAuthStore } from "@/lib/store";
-import api from "@/lib/api";
+import api, { authErrorMessage } from "@/lib/api";
 
 const registerSchema = z.object({
   email: z.string().email("Email invalide"),
@@ -59,7 +59,7 @@ export default function RegisterPage() {
       toast.success("Compte créé ! Essai gratuit de 30 jours activé.");
       router.push(`/dashboard/${me.role.toLowerCase()}`);
     } catch (error: unknown) {
-      const msg = (error as { response?: { data?: { message?: string } } })?.response?.data?.message ?? "Erreur lors de l'inscription";
+      const msg = authErrorMessage(error, "Erreur lors de l'inscription");
       toast.error(msg);
     } finally {
       setLoading(false);

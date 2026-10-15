@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PageTransition } from "@/components/ui/page-transition";
 import { useAuthStore } from "@/lib/store";
-import api from "@/lib/api";
+import api, { authErrorMessage } from "@/lib/api";
 
 const loginSchema = z.object({
   email: z.string().email("Email invalide"),
@@ -57,7 +57,7 @@ export default function LoginPage() {
       toast.success(`Bienvenue, ${me.firstName} !`);
       router.push(`/dashboard/${me.role.toLowerCase()}`);
     } catch (error: unknown) {
-      const msg = (error as { response?: { data?: { message?: string } } })?.response?.data?.message ?? "Erreur de connexion";
+      const msg = authErrorMessage(error, "Erreur de connexion");
       toast.error(msg);
     } finally {
       setLoading(false);
@@ -77,7 +77,7 @@ export default function LoginPage() {
       toast.success(`Bienvenue, ${me.firstName} !`);
       router.push(`/dashboard/${me.role.toLowerCase()}`);
     } catch (error: unknown) {
-      const msg = (error as { response?: { data?: { message?: string } } })?.response?.data?.message ?? "Erreur";
+      const msg = authErrorMessage(error, "Erreur lors de la vérification 2FA");
       toast.error(msg);
     } finally {
       setLoading(false);
