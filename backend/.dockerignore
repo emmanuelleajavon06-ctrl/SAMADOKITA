@@ -4,4 +4,3 @@ node_modules
 dist
 .git
 Dockerfile
-docker-entrypoint.sh
