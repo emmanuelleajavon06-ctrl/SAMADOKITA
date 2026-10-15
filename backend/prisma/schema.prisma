@@ -1,0 +1,516 @@
+// Prisma schema V2 — SamaDokita V3 FINAL
+// Indexé pour 800K utilisateurs : @index sur tous les FK + createdAt
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN_INFRA
+  MEDECIN
+  PHARMACIEN
+  LABORANTIN
+  ASSURANCE
+  PATIENT
+}
+
+enum SubscriptionPlan {
+  STARTER
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  SUSPENDED
+  CANCELED
+}
+
+enum PaymentProvider {
+  WAVE
+  ORANGE_MONEY
+  FREE_MONEY
+  CARD
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+enum TeleconsultationStatus {
+  WAITING
+  IN_PROGRESS
+  ENDED
+}
+
+enum PrescriptionStatus {
+  DRAFT
+  VALIDATED
+  DISPENSED
+  EXPIRED
+}
+
+enum LabResultStatus {
+  PENDING
+  VALIDATED
+  PUBLISHED
+}
+
+enum EmergencyStatus {
+  ACTIVE
+  RESOLVED
+}
+
+enum NotificationType {
+  APPOINTMENT
+  PRESCRIPTION
+  LAB_RESULT
+  EMERGENCY
+  BILLING
+  SYSTEM
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum InfraType {
+  HOPITAL
+  CLINIQUE
+  CABINET
+  PHARMACIE
+  LABORATOIRE
+}
+
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  phone             String?
+  firstName         String
+  lastName          String
+  password          String
+  role              Role      @default(PATIENT)
+  status            String    @default("ACTIVE")
+  twoFactorEnabled  Boolean   @default(false)
+  twoFactorSecret   String?
+  infrastructureId  String?
+  infrastructure    Infrastructure? @relation("InfraUsers", fields: [infrastructureId], references: [id])
+  ownedInfrastructures Infrastructure[] @relation("InfraOwner")
+  lastLoginAt       DateTime?
+  failedAttempts    Int       @default(0)
+  lockedUntil       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  patients          Patient[]
+  doctors           Doctor[]
+  auditLogs         AuditLog[]
+  notifications     Notification[]
+
+  @@index([infrastructureId])
+  @@index([role])
+  @@index([createdAt])
+}
+
+model Infrastructure {
+  id                 String             @id @default(cuid())
+  name               String
+  type               InfraType          @default(HOPITAL)
+  address            String?
+  phone              String?
+  email              String?
+  logoUrl            String?
+  subscriptionPlan   SubscriptionPlan   @default(STARTER)
+  subscriptionStatus SubscriptionStatus @default(TRIALING)
+  trialEndsAt        DateTime           @default(dbgenerated("NOW() + interval '30 days'"))
+  subscriptionEndsAt DateTime           @default(dbgenerated("NOW() + interval '1 month'"))
+  maxUsers           Int                @default(5)
+  maxPatients        Int                @default(500)
+  ownerId            String?
+  owner              User?              @relation("InfraOwner", fields: [ownerId], references: [id])
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  users              User[]              @relation("InfraUsers")
+  patients           Patient[]
+  doctors            Doctor[]
+  subscriptions      SubscriptionHistory[]
+  invoices           Invoice[]
+  pharmacies         Pharmacy[]
+  laboratories       Laboratory[]
+  insurances         Insurance[]
+
+  @@index([subscriptionStatus])
+  @@index([subscriptionEndsAt])
+  @@index([createdAt])
+}
+
+model Patient {
+  id               String    @id @default(cuid())
+  firstName        String
+  lastName         String
+  dateOfBirth      DateTime?
+  gender           Gender?
+  phone            String?
+  address          String?
+  bloodGroup       String?
+  allergies        Json?
+  chronicDiseases  Json?
+  medicalHistory   Json?
+  photoUrl         String?
+  insurancePolicyId String?  @unique
+  insurancePolicy  InsurancePolicy? @relation(fields: [insurancePolicyId], references: [id])
+  infrastructureId String
+  infrastructure   Infrastructure @relation(fields: [infrastructureId], references: [id])
+  createdById      String?
+  createdBy        User?     @relation(fields: [createdById], references: [id])
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  appointments     Appointment[]
+  prescriptions    Prescription[]
+  labResults       LabResult[]
+  vaccinations     Vaccination[]
+  pregnancies      Pregnancy[]
+  emergencies      Emergency[]
+
+  @@index([infrastructureId])
+  @@index([createdById])
+  @@index([createdAt])
+  @@index([lastName])
+}
+
+model Doctor {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  user            User     @relation(fields: [userId], references: [id])
+  specialty       String
+  licenseNumber   String
+  availability    Json?
+  bio             String?
+  infrastructureId String
+  infrastructure  Infrastructure @relation(fields: [infrastructureId], references: [id])
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  appointments    Appointment[]
+  teleconsultations Teleconsultation[]
+  prescriptions   Prescription[]
+
+  @@index([specialty])
+  @@index([infrastructureId])
+}
+
+model Appointment {
+  id                String            @id @default(cuid())
+  patientId         String
+  patient           Patient           @relation(fields: [patientId], references: [id])
+  doctorId          String
+  doctor            Doctor            @relation(fields: [doctorId], references: [id])
+  scheduledAt       DateTime
+  durationMinutes   Int               @default(30)
+  isTeleconsultation Boolean          @default(false)
+  meetingLink       String?
+  status            AppointmentStatus @default(PENDING)
+  reason            String?
+  notes             String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  teleconsultation  Teleconsultation?
+
+  @@index([patientId])
+  @@index([doctorId])
+  @@index([scheduledAt])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Teleconsultation {
+  id          String                 @id @default(cuid())
+  appointmentId String             @unique
+  appointment Appointment          @relation(fields: [appointmentId], references: [id])
+  doctorId    String
+  doctor      Doctor               @relation(fields: [doctorId], references: [id])
+  patientId   String
+  status      TeleconsultationStatus @default(WAITING)
+  meetingLink String
+  chatMessages Json                @default("[]")
+  startedAt   DateTime?
+  endedAt     DateTime?
+  createdAt   DateTime             @default(now())
+
+  @@index([doctorId])
+  @@index([patientId])
+  @@index([status])
+}
+
+model Prescription {
+  id            String             @id @default(cuid())
+  patientId     String
+  patient       Patient            @relation(fields: [patientId], references: [id])
+  doctorId      String
+  doctor        Doctor             @relation(fields: [doctorId], references: [id])
+  appointmentId String?
+  medications   Json
+  instructions  String?
+  pdfUrl        String?
+  qrCode        String?
+  signature     String?
+  status        PrescriptionStatus @default(VALIDATED)
+  issuedAt      DateTime           @default(now())
+  expiresAt     DateTime?
+  createdAt     DateTime           @default(now())
+
+  @@index([patientId])
+  @@index([doctorId])
+  @@index([issuedAt])
+  @@index([status])
+}
+
+model Pharmacy {
+  id              String       @id @default(cuid())
+  name            String
+  address         String?
+  phone           String?
+  lat             Float?
+  lng             Float?
+  infrastructureId String?
+  infrastructure  Infrastructure? @relation(fields: [infrastructureId], references: [id])
+  createdAt       DateTime     @default(now())
+
+  @@index([infrastructureId])
+  @@index([lat, lng])
+}
+
+model Laboratory {
+  id              String       @id @default(cuid())
+  name            String
+  address         String?
+  phone           String?
+  infrastructureId String?
+  infrastructure  Infrastructure? @relation(fields: [infrastructureId], references: [id])
+  createdAt       DateTime     @default(now())
+
+  @@index([infrastructureId])
+}
+
+model LabResult {
+  id            String           @id @default(cuid())
+  patientId     String
+  patient       Patient          @relation(fields: [patientId], references: [id])
+  laboratoryId  String?
+  type          String
+  result        String?
+  fileUrl       String?
+  resultDate    DateTime?
+  status        LabResultStatus  @default(PENDING)
+  notes         String?
+  createdAt     DateTime         @default(now())
+
+  @@index([patientId])
+  @@index([laboratoryId])
+  @@index([resultDate])
+  @@index([status])
+}
+
+model Insurance {
+  id              String       @id @default(cuid())
+  name            String
+  code            String       @unique
+  coverageRate    Float        @default(80)
+  infrastructureId String?
+  infrastructure  Infrastructure? @relation(fields: [infrastructureId], references: [id])
+  createdAt       DateTime     @default(now())
+
+  policies        InsurancePolicy[]
+
+  @@index([code])
+}
+
+model InsurancePolicy {
+  id           String      @id @default(cuid())
+  patientId    String?
+  patient      Patient?
+  insuranceId  String
+  insurance    Insurance   @relation(fields: [insuranceId], references: [id])
+  policyNumber String      @unique
+  startDate    DateTime?
+  endDate      DateTime?
+  coverageRate Float       @default(80)
+  createdAt    DateTime    @default(now())
+
+  @@index([insuranceId])
+  @@index([patientId])
+}
+
+model Vaccination {
+  id             String   @id @default(cuid())
+  patientId      String
+  patient        Patient  @relation(fields: [patientId], references: [id])
+  vaccine        String
+  doseNumber     Int
+  vaccinationDate DateTime
+  nextDoseDate   DateTime?
+  location       String?
+  notes          String?
+  createdAt      DateTime @default(now())
+
+  @@index([patientId])
+  @@index([vaccinationDate])
+  @@index([nextDoseDate])
+}
+
+model Pregnancy {
+  id                     String     @id @default(cuid())
+  patientId              String
+  patient                Patient    @relation(fields: [patientId], references: [id])
+  expectedDueDate        DateTime
+  lastMenstrualPeriod    DateTime?
+  timeline               Json       @default("[]")
+  riskLevel              RiskLevel  @default(LOW)
+  notes                  String?
+  createdAt              DateTime   @default(now())
+  updatedAt              DateTime   @updatedAt
+
+  @@index([patientId])
+  @@index([expectedDueDate])
+}
+
+model Emergency {
+  id          String          @id @default(cuid())
+  userId      String?
+  patientId   String?
+  patient     Patient?        @relation(fields: [patientId], references: [id])
+  lat         Float
+  lng         Float
+  status      EmergencyStatus @default(ACTIVE)
+  type        String?
+  description String?
+  radiusKm    Float           @default(5)
+  notifiedAt  DateTime?
+  resolvedAt  DateTime?
+  createdAt   DateTime        @default(now())
+
+  @@index([patientId])
+  @@index([status])
+  @@index([lat, lng])
+  @@index([createdAt])
+}
+
+model Notification {
+  id        String            @id @default(cuid())
+  userId    String
+  user      User              @relation(fields: [userId], references: [id])
+  title     String
+  message   String
+  type      NotificationType  @default(SYSTEM)
+  read      Boolean           @default(false)
+  data      Json?
+  createdAt DateTime          @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+  @@index([read])
+}
+
+model SubscriptionHistory {
+  id              String           @id @default(cuid())
+  infrastructureId String
+  infrastructure  Infrastructure   @relation(fields: [infrastructureId], references: [id])
+  plan            SubscriptionPlan
+  amount          Int
+  currency        String           @default("FCFA")
+  provider        PaymentProvider
+  status          PaymentStatus
+  transactionId   String?
+  startDate       DateTime?
+  endDate         DateTime?
+  createdAt       DateTime         @default(now())
+
+  @@index([infrastructureId])
+  @@index([transactionId])
+  @@index([createdAt])
+}
+
+model Invoice {
+  id                  String             @id @default(cuid())
+  infrastructureId    String
+  infrastructure      Infrastructure     @relation(fields: [infrastructureId], references: [id])
+  subscriptionHistoryId String?
+  pdfUrl              String?
+  amount              Int
+  currency            String             @default("FCFA")
+  issuedAt            DateTime           @default(now())
+
+  @@index([infrastructureId])
+  @@index([issuedAt])
+}
+
+model PaymentEvent {
+  id          String   @id @default(cuid())
+  provider    PaymentProvider
+  eventId     String   @unique
+  payload     Json
+  processed   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([provider, eventId])
+}
+
+model AuditLog {
+  id                String   @id @default(cuid())
+  action            String
+  userId            String?
+  user              User?    @relation(fields: [userId], references: [id])
+  infrastructureId  String?
+  entity            String?
+  entityId          String?
+  ip                String?
+  metadata          Json?
+  createdAt         DateTime @default(now())
+
+  @@index([userId])
+  @@index([infrastructureId])
+  @@index([entity, entityId])
+  @@index([createdAt])
+}
+
+model LoginAttempt {
+  id        String   @id @default(cuid())
+  email     String
+  ip        String?
+  success   Boolean
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([email])
+  @@index([createdAt])
+  @@index([success])
+}

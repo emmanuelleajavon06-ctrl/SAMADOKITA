@@ -1,0 +1,6 @@
+# Les certificats TLS ne sont JAMAIS commités.
+# Placez ici fullchain.pem + privkey.pem (générés par scripts/gen-certs.sh).
+*.pem
+*.key
+*.crt
+!.gitkeep

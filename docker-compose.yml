@@ -1,0 +1,216 @@
+version: "3.9"
+
+# ============================================================
+#  SamaDokita V3 — Stack de production
+#  Lancer :  docker compose --env-file .env up -d --build
+# ============================================================
+
+services:
+  # ---------- PostgreSQL 16 ----------
+  postgres:
+    image: postgres:16-alpine
+    container_name: samadokita-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-samadokita}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD requis}
+      POSTGRES_DB: ${DB_NAME:-samadokita}
+      TZ: Africa/Dakar
+    # Exposé uniquement en localhost (le trafic passe par PgBouncer/nginx)
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-samadokita} -d ${DB_NAME:-samadokita}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------- Redis 7 ----------
+  redis:
+    image: redis:7-alpine
+    container_name: samadokita-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------- Stockage objet S3 (SeaweedFS localement / MinIO en prod, même API S3) ----------
+  minio:
+    image: minio/minio:latest
+    container_name: samadokita-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER requis}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD requis}
+      TZ: Africa/Dakar
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------- PgBouncer (pooling transaction — requis pour ~800K users) ----------
+  pgbouncer:
+    build:
+      context: .
+      dockerfile: scripts/pgbouncer/Dockerfile
+    container_name: samadokita-pgbouncer
+    restart: unless-stopped
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: ${DB_NAME:-samadokita}
+      DB_USER: ${DB_USER:-samadokita}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD requis}
+      PGBOUNCER_MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-1000}
+      PGBOUNCER_DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE:-40}
+      PGBOUNCER_MIN_POOL_SIZE: ${PGBOUNCER_MIN_POOL_SIZE:-10}
+      PGBOUNCER_RESERVE_POOL_SIZE: ${PGBOUNCER_RESERVE_POOL_SIZE:-10}
+    ports:
+      - "127.0.0.1:6432:6432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ---------- Backend NestJS ----------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: samadokita-backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      # Runtime via PgBouncer (pooling transaction) — SANS pgbouncer=true (PgBouncer ≥1.21)
+      DATABASE_URL: postgresql://${DB_USER:-samadokita}:${DB_PASSWORD}@pgbouncer:6432/${DB_NAME:-samadokita}?schema=public
+      # Migrations Prisma via connexion directe (Schema Engine incompatible PgBouncer)
+      DIRECT_DATABASE_URL: postgresql://${DB_USER:-samadokita}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-samadokita}?schema=public
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER:-samadokita}
+      DB_NAME: ${DB_NAME:-samadokita}
+      REDIS_URL: redis://redis:6379
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: samadokita
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET requis}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET requis}
+      WAVE_API_KEY: ${WAVE_API_KEY:-}
+      ORANGE_API_KEY: ${ORANGE_API_KEY:-}
+      FREE_MONEY_API_KEY: ${FREE_MONEY_API_KEY:-}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET requis}
+      FRONTEND_URL: ${FRONTEND_URL:-https://samadokita.sn}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://samadokita.sn}
+      # Email (SMTP)
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      MAIL_FROM: ${MAIL_FROM:-SamaDokita <no-reply@samadokita.sn>}
+      # Monitoring
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.1}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3001/health/live >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  # ---------- Frontend Next.js ----------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: samadokita-frontend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      # Derrière nginx → l'appel API est relatif (/api, nginx strip le préfixe)
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api}
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/ >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ---------- Nginx (reverse proxy : TLS, rate-limit, sécurité) ----------
+  nginx:
+    image: nginx:alpine
+    container_name: samadokita-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - nginx-cache:/var/cache/nginx
+    depends_on:
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+
+  # ---------- Backup PostgreSQL (cron) + upload S3 ----------
+  backup:
+    build:
+      context: .
+      dockerfile: scripts/backup.Dockerfile
+    container_name: samadokita-backup
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: ${DB_USER:-samadokita}
+      PGPASSWORD: ${DB_PASSWORD}
+      PGDATABASE: ${DB_NAME:-samadokita}
+      BACKUP_DIR: /backups
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+      BACKUP_CRON: ${BACKUP_CRON:-0 2 * * *}
+      BACKUP_ON_START: ${BACKUP_ON_START:-1}
+      S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-http://minio:9000}
+      S3_BUCKET: ${BACKUP_S3_BUCKET:-samadokita-backups}
+      S3_ACCESS_KEY: ${BACKUP_S3_ACCESS_KEY:-}
+      S3_SECRET_KEY: ${BACKUP_S3_SECRET_KEY:-}
+    volumes:
+      - backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+  backups:
+  nginx-cache:
