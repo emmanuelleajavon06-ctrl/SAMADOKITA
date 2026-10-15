@@ -22,4 +22,6 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 USER nextjs
 EXPOSE 3000
 ENV PORT 3000
-CMD ["node", "server.js"]
+# HOSTNAME=0.0.0.0 force le serveur Next standalone à écouter sur toutes les
+# interfaces (Docker définit HOSTNAME = id du conteneur → Render reçoit 502).
+CMD ["sh", "-c", "HOSTNAME=0.0.0.0 node server.js"]
