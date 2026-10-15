@@ -15,9 +15,29 @@ if [ -z "$WEBHOOK_SECRET" ]; then
   echo "WEBHOOK_SECRET généré (fournis-le en prod pour la persistance)"
 fi
 
-# Attente PostgreSQL direct (hors PgBouncer)
-echo "Attente PostgreSQL (${DB_HOST:-postgres}:${DB_PORT:-5432})..."
-until pg_isready -U "${DB_USER:-samadokita}" -d "${DB_NAME:-samadokita}" -h "${DB_HOST:-postgres}" -p "${DB_PORT:-5432}" >/dev/null 2>&1; do
+# Attente PostgreSQL direct (hors PgBouncer).
+# ⚠️ pg_isready ne négocie PAS le TLS : Render Postgres rejette les connexions
+# non-SSL (FATAL) → attente infinie → "Port scan timeout" côté Render.
+# On utilise donc psql (libpq complet : SSL + authentification).
+HOST_P="${DB_HOST:-postgres}"
+PORT_P="${DB_PORT:-5432}"
+USER_P="${DB_USER:-samadokita}"
+NAME_P="${DB_NAME:-samadokita}"
+PASS_P="${DB_PASSWORD:-}"
+if [ -z "$PASS_P" ]; then
+  # Repli : extraction du mot de passe depuis DATABASE_URL
+  PASS_P=$(printf '%s' "${DATABASE_URL:-}" | sed -e 's|^[a-zA-Z][a-zA-Z0-9+.-]*://[^:/@]*:\([^@]*\)@.*|\1|')
+  case "$PASS_P" in *":://"*) PASS_P="" ;; esac
+fi
+
+echo "Attente PostgreSQL ($HOST_P:$PORT_P)..."
+n=0
+until PGPASSWORD="$PASS_P" psql -h "$HOST_P" -p "$PORT_P" -U "$USER_P" -d "$NAME_P" -tAc 'SELECT 1' >/dev/null 2>&1; do
+  n=$((n + 1))
+  if [ $((n % 5)) -eq 1 ]; then
+    ERR=$(PGPASSWORD="$PASS_P" psql -h "$HOST_P" -p "$PORT_P" -U "$USER_P" -d "$NAME_P" -tAc 'SELECT 1' 2>&1 | head -n 2 | tr '\n' ' ')
+    echo "  ...tentative #$n : $ERR"
+  fi
   sleep 2
 done
 echo "PostgreSQL prêt."
