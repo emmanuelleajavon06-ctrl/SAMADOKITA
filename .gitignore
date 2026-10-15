@@ -49,6 +49,8 @@ logs/
 backups/
 *.sql.gz
 *.sql
+# ... mais les migrations Prisma sont trackées (elles doivent l'être)
+!backend/prisma/migrations/**/*.sql
 
 # --- OS / éditeur ---
 .DS_Store
