@@ -5,6 +5,10 @@ COPY package*.json ./
 RUN npm ci
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED 1
+# L'URL de l'API est inlinée par Next.js AU BUILD. Render n'injecte pas les
+# variables d'env dans les builds Docker → on la fige ici (overridable en build-arg).
+ARG NEXT_PUBLIC_API_URL=https://samadokita-backend.onrender.com
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 RUN npm run build
 
 FROM node:20-alpine AS runner
