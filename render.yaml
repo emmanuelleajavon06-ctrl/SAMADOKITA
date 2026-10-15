@@ -1,0 +1,137 @@
+# ============================================================
+#  SamaDokita — Render Blueprint (Infrastructure-as-Code)
+#
+#  Déploiement en UN clic : Render → "New +" → "Blueprint" →
+#  connecter ce repo. Render provisionne TOUT à partir de ce fichier :
+#  Postgres, Key Value (Redis), backend (NestJS), frontend (Next.js),
+#  avec les connexions et secrets branchés automatiquement.
+#
+#  Région : Frankfurt (UE) — résidence des données en Europe.
+#  Voir docs/DEPLOIEMENT/RENDER-GITHUB.md §2 (souveraineté santé).
+# ============================================================
+
+databases:
+  - name: samadokita-db
+    databaseName: samadokita
+    user: samadokita
+    region: frankfurt
+    plan: basic-256mb
+    ipAllowList: [] # Accès réseau privé uniquement (aucune IP publique)
+
+services:
+  # ---------- Key Value (Redis-compatible) : refresh tokens, cache, BullMQ ----------
+  - type: keyvalue
+    name: samadokita-cache
+    region: frankfurt
+    plan: starter
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: [] # Réseau privé uniquement
+
+  # ---------- Backend NestJS ----------
+  - type: web
+    name: samadokita-backend
+    runtime: docker
+    region: frankfurt
+    plan: standard
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health/live
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      # Base de données — Prisma (son propre pool). Le DIRECT sert aux migrations.
+      # Quand tu dépasseras ~100 connexions, bascule DATABASE_URL sur
+      # `property: connectionPoolString` (pooler PgBouncer de Render, compatible Prisma).
+      - key: DATABASE_URL
+        fromDatabase:
+          name: samadokita-db
+          property: connectionString
+      - key: DIRECT_DATABASE_URL
+        fromDatabase:
+          name: samadokita-db
+          property: connectionString
+
+      # Requis par docker-entrypoint.sh (attente Postgres + migrations)
+      - key: DB_HOST
+        fromDatabase:
+          name: samadokita-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: samadokita-db
+          property: port
+      - key: DB_USER
+        fromDatabase:
+          name: samadokita-db
+          property: user
+      - key: DB_NAME
+        fromDatabase:
+          name: samadokita-db
+          property: database
+
+      # Redis (Key Value)
+      - key: REDIS_URL
+        fromService:
+          name: samadokita-cache
+          type: keyvalue
+          property: connectionString
+
+      # Secrets — générés et persistés par Render (jamais dans le repo)
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: WEBHOOK_SECRET
+        generateValue: true
+
+      # Application — sous-domaines onrender.com PRÉVUS depuis les noms de service.
+      # Si tu customises les domaines, ajuste ces 3 valeurs.
+      - key: FRONTEND_URL
+        value: https://samadokita-frontend.onrender.com
+      - key: CORS_ORIGINS
+        value: https://samadokita-frontend.onrender.com
+
+      # Stockage objet S3 (R2 / B2 / Scaleway / SeaweedFS) — à te fournir
+      - key: MINIO_ENDPOINT
+        sync: false
+      - key: MINIO_ROOT_USER
+        sync: false
+      - key: MINIO_ROOT_PASSWORD
+        sync: false
+      - key: MINIO_BUCKET
+        value: samadokita
+
+      # Email SMTP (forgot-password + notifications) — à te fournir
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: MAIL_FROM
+        value: SamaDokita <no-reply@samadokita.sn>
+
+      # Monitoring Sentry (optionnel) — à te fournir
+      - key: SENTRY_DSN
+        sync: false
+      - key: SENTRY_TRACES_SAMPLE_RATE
+        value: "0.1"
+
+  # ---------- Frontend Next.js ----------
+  - type: web
+    name: samadokita-frontend
+    runtime: docker
+    region: frankfurt
+    plan: standard
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # API en URL ABSOLUE vers le backend onrender (services séparés sur Render).
+      # Doit correspondre au sous-domaine réel du backend.
+      - key: NEXT_PUBLIC_API_URL
+        value: https://samadokita-backend.onrender.com
