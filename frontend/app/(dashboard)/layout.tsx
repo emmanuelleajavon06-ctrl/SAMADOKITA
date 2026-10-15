@@ -59,7 +59,6 @@ const navByRole: Record<string, Array<{ href: string; label: string; icon: typeo
   ],
   super_admin: [
     { href: "/dashboard/super_admin", label: "Tableau de bord", icon: Home },
-    { href: "/dashboard/super_admin/infrastructures", label: "Infrastructures", icon: Users },
     { href: "/dashboard/super_admin/billing", label: "Facturation", icon: FileText },
   ],
 };
@@ -70,8 +69,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const { theme, setTheme } = useTheme();
 
   useEffect(() => {
-    if (user && !navByRole[user.role]) {
-      router.push("/login");
+    if (!user) {
+      router.replace("/login");
+      return;
+    }
+    if (!navByRole[user.role]) {
+      router.replace("/login");
     }
   }, [user, router]);
 
