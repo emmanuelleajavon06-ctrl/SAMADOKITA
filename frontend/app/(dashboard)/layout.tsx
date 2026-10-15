@@ -73,7 +73,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       router.replace("/login");
       return;
     }
-    if (!navByRole[user.role]) {
+    // /auth/me renvoie le rôle en MAJUSCULES (ex. ADMIN_INFRA) ; la nav attend
+    // la forme minuscule (admin_infra). On normalise avant la comparaison.
+    if (!navByRole[user.role.toLowerCase()]) {
       router.replace("/login");
     }
   }, [user, router]);
@@ -84,7 +86,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     router.push("/login");
   };
 
-  const role = user?.role ?? "";
+  const role = (user?.role ?? "").toLowerCase();
   const nav = navByRole[role] ?? [];
 
   return (
