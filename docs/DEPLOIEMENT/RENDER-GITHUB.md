@@ -298,3 +298,126 @@ Le **stockage objet** ( R2/B2 ) est facturé à part ( très peu cher ). Coût d
 - [ ] **Conformité CDP** déposée avant ouverture au public
       ( [`../conformite/06`](../conformite/06-demande-autorisation-cdp.md) )
 - [ ] Sauvegarde / restauration **testées**
+
+
+---
+
+## 9. Retour d'expérience — déploiement réel du 15 octobre 2026 (plateforme EN LIGNE)
+
+État courant (vérifié de bout en bout) :
+
+| Service | URL / ID | État |
+|---------|----------|------|
+| Frontend | https://samadokita-frontend.onrender.com (`srv-db82uvaj9qps73behf8g`) | **live** — build Docker, auto-deploy sur push |
+| Backend | https://samadokita-backend.onrender.com (`srv-db82uuaj9qps73behbfg`) | **live** — `/health/live` = 200 |
+| Postgres | `dpg-db82d19srm7s738f5890-a` (Frankfurt, PG16, free) | disponible — **expire le 2026-11-14** |
+| Key Value | `red-db82d1hsrm7s738f59pg` (Redis 8, free) | disponible — via **host interne** |
+
+Parcours validé : `register` → `login` (JWT) → `/auth/me` → dashboard `/dashboard/admin_infra`
+→ module **Patients** avec données réelles (table, badges de statut, dates FR) → refresh token
+(rotations) → CORS preflight 204 depuis le domaine frontend.
+
+### 9.1 Deux remotes : CI (origin) et Render (deploy)
+
+Render ne voit que les dépôts **détenus** par le compte GitHub lié. `origin` =
+`emmanuelkairos1-bit/samadokita` (privé, GitHub Actions) ; `deploy` =
+`emmanuelleajavon06-ctrl/SAMADOKITA` (lecture/écriture via **deploy key SSH**).
+
+```powershell
+# Clé de déploiement (une fois)
+ssh-keygen -t ed25519 -f .\.ssh\samadokita_deploy_key -N '""'   # ou clé fournie
+# Ajouter la clé publique : GitHub → SAMADOKITA → Settings → Deploy keys → Allow write access
+git remote add deploy git@github.com:emmanuelleajavon06-ctrl/SAMADOKITA.git
+# Windows : chemin SSH en slashs / (les backslashes sont interprétés par le shell)
+git config core.sshCommand "ssh -i C:/Users/<user>/.ssh/samadokita_deploy_key -o StrictHostKeyChecking=accept-new"
+
+# Chaque livraison : les DEUX remotes
+git push origin main    # CI GitHub Actions
+git push deploy main    # auto-deploy Render (webhook)
+```
+
+### 9.2 Piège n°1 — Render Postgres impose le TLS (pg_isready bloque le démarrage)
+
+Le serveur rejette toute connexion non-SSL (`FATAL` sur startup packet sans TLS) et
+**`pg_isready` ne négocie pas le TLS** : la boucle d'attente classique ne finit jamais →
+Render affiche « No open ports detected… Port scan timeout » et le deploy échoue en ~6 min.
+
+Corrigé dans `backend/docker-entrypoint.sh` : l'attente se fait sur une **vraie requête
+Prisma** (`$queryRaw SELECT 1`) avec repli automatique :
+
+1. cible externe (`DATABASE_URL` telle que configurée, `?sslmode=require`) ;
+2. host interne Render (`dpg-…` sans suffixe, réseau privé) ;
+3. host interne sans SSL.
+
+Le script exporte ensuite `DATABASE_URL`/`DIRECT_DATABASE_URL` sur la cible qui a
+répondu, applique `prisma migrate deploy`, puis démarre l'app. Un diagnostic réseau
+(TCP externe/interne, `psql`, `openssl s_client -starttls postgres`) est journalisé au
+démarrage pour toute nouvelle incident.
+
+### 9.3 Piège n°2 — Key Value : allowlist IP sur les connexions publiques
+
+Le backend recevait `ReplyError: Client IP address is not in the allowlist.` sur
+`rediss://…frankfurt-keyvalue.render.com`. **Render n'expose pas l'allowlist du Key Value
+dans l'API des plans gratuits** : la solution est d'utiliser la **connexion interne** :
+
+```
+REDIS_URL=redis://red-<id-du-kv>:6379        # host interne, réseau privé Render
+```
+
+Les refresh tokens (Redis), le cache et les files BullMQ fonctionnent via cette URL.
+
+### 9.4 Variables d'environnement : l'API ne gère pas les env vars dans le PATCH service
+
+- Lecture : `GET /v1/services/{id}/env-vars` (réponse enveloppée `{envVar:{key,value},cursor}`) ;
+- Écriture : `PUT /v1/services/{id}/env-vars` avec la **liste complète** `[{key,value}]`
+  (remplacement) ;
+- Les changements ne s'appliquent qu'au **prochain deploy** : `POST /v1/services/{id}/deploys`.
+
+Points d'attention des URLs :
+- `DATABASE_URL` et `DIRECT_DATABASE_URL` doivent porter `?sslmode=require` (TLS imposé) ;
+- `REDIS_URL` = host interne (cf. 9.3) ;
+- `NEXT_PUBLIC_API_URL` doit être figé au **build** Docker : `ARG`/`ENV` dans
+  `frontend/Dockerfile` (Render n'injecte pas les env vars aux builds Docker).
+
+### 9.5 Piège n°3 — Next standalone écoute sur le hostname du conteneur (502)
+
+Docker définit `HOSTNAME=<id-conteneur>` ; le serveur Next standalone s'y lie au lieu de
+`0.0.0.0`, Render contacte `localhost:10000` → **502**. Corrigé dans
+`frontend/Dockerfile` :
+
+```dockerfile
+CMD ["sh", "-c", "HOSTNAME=0.0.0.0 node server.js"]
+```
+
+### 9.6 Santé : les trois endpoints
+
+- `/health/live` : **utilisé par Render** (health check du deploy) — toujours 200 ;
+- `/health/ready` : vérifie la base (200 tant que Postgres répond) ;
+- `/health` : base + Redis + **stockage** → restera `503` tant qu'aucun S3 (R2/B2) n'est
+  branché via `MINIO_ENDPOINT`/`MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY`/`MINIO_BUCKET`.
+  C'est voulu : l'endpoint signale l'état dégradé réel.
+
+### 9.7 Frontend : deux leçons de routage
+
+1. `(dashboard)` est un **route group** (aucun segment d'URL) : les pages vives sous
+   `/dashboard/…` doivent être placées physiquement dans `app/(dashboard)/dashboard/…`.
+   Les pages modules (`/dashboard/[role]/[module]`) sont branchées sur les vraies API
+   NestJS (pagination curseur, recherche `?q=`, badges d'enum) — `frontend/lib/modules.ts`.
+2. `/auth/me` renvoie `role: "ADMIN_INFRA"` (majuscules) alors que la navigation attend
+   `admin_infra` : **normaliser la casse** avant toute comparaison de rôle
+   (`app/(dashboard)/layout.tsx`).
+
+### 9.8 Limites du plan gratuit (à traiter avant ouverture publique)
+
+- **Aucun moyen de paiement** sur le compte → HTTP 402 sur tout plan payant. Ajouter une
+  carte (Dashboard → Billing) puis passer Postgres/Key Value/services en Starter :
+  le Postgres free **expire le 2026-11-14** et les web services free dorment (~50 s de
+  réveil, et l'extinction tue les workers en mémoire).
+- Shell Render indisponible sur plan gratuit (diagnostics via les logs du deploy).
+- SMTP absent : `forgot-password` répond mais **n'envoie rien** — brancher SMTP_* (ou un
+  provider transactionnel) avant toute communication réelle.
+- Dépôt CDP + validation conseil juridique : dossier `docs/conformite/` (champs
+  `[…À COMPLÉTER…]`).
+
+---
+*Guide mis à jour après le déploiement réel du 15/10/2026.*
