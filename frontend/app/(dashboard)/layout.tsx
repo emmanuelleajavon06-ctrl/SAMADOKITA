@@ -69,15 +69,26 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const { theme, setTheme } = useTheme();
 
   useEffect(() => {
-    if (!user) {
-      router.replace("/login");
+    if (user) {
+      // /auth/me renvoie le rôle en MAJUSCULES (ex. ADMIN_INFRA) ; la nav
+      // attend la forme minuscule (admin_infra). On normalise avant comparaison.
+      if (!navByRole[user.role.toLowerCase()]) {
+        router.replace("/login");
+      }
       return;
     }
-    // /auth/me renvoie le rôle en MAJUSCULES (ex. ADMIN_INFRA) ; la nav attend
-    // la forme minuscule (admin_infra). On normalise avant la comparaison.
-    if (!navByRole[user.role.toLowerCase()]) {
-      router.replace("/login");
-    }
+    // Hydratation du store persisté (localStorage) : au TOUT premier rendu,
+    // `user` peut encore être null même si une session existe (le store
+    // s'hydrate juste après le montage). Sans cette attente, un simple
+    // rechargement de /dashboard redirigeait vers /login alors que la
+    // session est valide. On patiente brièvement, puis on relit l'état
+    // RÉEL du store avant de conclure à une session absente.
+    const timer = setTimeout(() => {
+      if (!useAuthStore.getState().user) {
+        router.replace("/login");
+      }
+    }, 400);
+    return () => clearTimeout(timer);
   }, [user, router]);
 
   const handleLogout = () => {
